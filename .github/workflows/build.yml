@@ -9,6 +9,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    env:
+      JAVA_TOOL_OPTIONS: "-Djava.awt.headless=true"
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -26,9 +29,9 @@ jobs:
         run: |
           if [ -f "./gradlew" ]; then
             chmod +x gradlew
-            ./gradlew assembleDebug --stacktrace
+            ./gradlew assembleDebug --no-daemon -Djava.awt.headless=true
           else
-            gradle assembleDebug --stacktrace
+            gradle assembleDebug --no-daemon -Djava.awt.headless=true
           fi
 
       - name: Upload APK Artifact

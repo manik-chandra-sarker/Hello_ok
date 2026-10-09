@@ -26,13 +26,17 @@ enum class TargetApp(val displayName: String, val defaultAction: String, val def
 }
 
 enum class OfflineEngineMode(val title: String, val subtitle: String) {
-    HYBRID_AUTO(
-        title = "Hybrid Auto (Recommended)",
-        subtitle = "Tries Google Offline STT first, automatically falls back to Direct Audio Engine"
+    VOSK_OFFLINE(
+        title = "Vosk Offline STT (True Speech-to-Text)",
+        subtitle = "Transforms spoken words into text 100% offline using embedded Vosk engine"
     ),
     STANDALONE_AUDIO(
-        title = "Direct Offline Audio Engine (Dicio-style)",
-        subtitle = "100% On-Device AudioRecord & VAD processing, zero Google dependencies"
+        title = "Direct Acoustic VAD Engine (Dicio-style)",
+        subtitle = "100% on-device AudioRecord VAD & acoustic phrase matcher"
+    ),
+    HYBRID_AUTO(
+        title = "Hybrid Auto (Vosk + Fallbacks)",
+        subtitle = "Uses Vosk offline STT, automatically falls back to Direct Audio Engine if needed"
     ),
     GOOGLE_STT(
         title = "Google SpeechRecognizer (Offline Mode)",
@@ -42,7 +46,7 @@ enum class OfflineEngineMode(val title: String, val subtitle: String) {
 
 data class AppSettings(
     val preferOffline: Boolean = true,
-    val engineMode: OfflineEngineMode = OfflineEngineMode.HYBRID_AUTO,
+    val engineMode: OfflineEngineMode = OfflineEngineMode.VOSK_OFFLINE,
     val vadSensitivity: Float = 0.5f,
     val silenceTimeoutMs: Long = 800L,
     val speechLanguage: String = "en-US",

@@ -12,16 +12,27 @@ import com.example.data.model.AppSettings
 import com.example.data.model.ServiceState
 import com.example.service.VoiceCaptureService
 import com.example.voice.VoiceSynthesisManager
+import com.example.voice.VoskManager
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.io.File
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val db = AppDatabase.getInstance(application)
     private val prefs = SettingsPreferences.getInstance(application)
     private val ttsTester = VoiceSynthesisManager(application)
+
+    private val _fallbackVoskState = MutableStateFlow<VoskManager.ModelState>(
+        if (File(application.filesDir, "vosk-model-small-en-us").exists())
+            VoskManager.ModelState.Ready
+        else
+            VoskManager.ModelState.NotInstalled
+    )
 
     val serviceState: StateFlow<ServiceState> = VoiceCaptureService.serviceState
 
@@ -34,6 +45,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val logs: StateFlow<List<CommandLogEntity>> = db.commandLogDao()
         .getAllLogs()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val voskModelState: StateFlow<VoskManager.ModelState>
+        get() = VoiceCaptureService.voskManagerInstance?.modelState ?: _fallbackVoskState.asStateFlow()
+
+    fun downloadVoskModel() {
+        val manager = VoiceCaptureService.voskManagerInstance
+        if (manager != null) {
+            manager.downloadOfflineModel(viewModelScope)
+        } else {
+            val standalone = VoskManager(
+                context = getApplication(),
+                onTextRecognized = {},
+                onPartialTranscript = {},
+                onStatusChanged = {},
+                onErrorOccurred = {}
+            )
+            standalone.downloadOfflineModel(viewModelScope)
+            viewModelScope.launch {
+                standalone.modelState.collect { state ->
+                    _fallbackVoskState.value = state
+                }
+            }
+        }
+    }
 
     fun toggleService() {
         if (serviceState.value.isRunning) {
@@ -87,7 +122,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (serviceState.value.isRunning) {
             VoiceCaptureService.simulateVoiceCommand(getApplication(), text)
         } else {
-            // Also allow simulating even when service is paused
             VoiceCaptureService.startService(getApplication())
             viewModelScope.launch {
                 kotlinx.coroutines.delay(400)
@@ -100,7 +134,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val app = getApplication<Application>()
         try {
             val intent = Intent(log.intentAction).apply {
-                flags = Intent.FLAG_INCLUDE_STOPPED_PACKAGES
+                flags = Intent.FLAG_INCLUDE_STOPPED_PACKAGES or Intent.FLAG_RECEIVER_FOREGROUND
                 putExtra("voice_command", log.rawText)
                 putExtra("command", log.rawText)
                 putExtra("%voice_command", log.rawText)

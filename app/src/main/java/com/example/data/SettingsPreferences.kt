@@ -24,11 +24,11 @@ class SettingsPreferences(context: Context) {
             TargetApp.TASKER
         }
 
-        val engineModeName = prefs.getString(KEY_ENGINE_MODE, OfflineEngineMode.HYBRID_AUTO.name) ?: OfflineEngineMode.HYBRID_AUTO.name
+        val engineModeName = prefs.getString(KEY_ENGINE_MODE, OfflineEngineMode.VOSK_OFFLINE.name) ?: OfflineEngineMode.VOSK_OFFLINE.name
         val engineMode = try {
             OfflineEngineMode.valueOf(engineModeName)
         } catch (e: Exception) {
-            OfflineEngineMode.HYBRID_AUTO
+            OfflineEngineMode.VOSK_OFFLINE
         }
 
         return AppSettings(

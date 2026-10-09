@@ -36,7 +36,7 @@ class ExampleRobolectricTest {
         val settings = prefs.getSettings()
 
         assertTrue(settings.preferOffline)
-        assertEquals(OfflineEngineMode.HYBRID_AUTO, settings.engineMode)
+        assertEquals(OfflineEngineMode.VOSK_OFFLINE, settings.engineMode)
         assertEquals(TargetApp.TASKER, settings.defaultTarget)
         assertEquals("net.dinglisch.android.tasker.ACTION_SPEECH_COMMAND", settings.defaultAction)
         assertEquals("voice_command", settings.defaultExtraKey)

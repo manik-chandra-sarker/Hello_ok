@@ -32,6 +32,7 @@ import com.example.voice.OfflineAudioEngine
 import com.example.voice.OfflineCommandMatcher
 import com.example.voice.VoiceRecognitionManager
 import com.example.voice.VoiceSynthesisManager
+import com.example.voice.VoskManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -54,6 +55,7 @@ class VoiceCaptureService : Service(), AudioManager.OnAudioFocusChangeListener {
     private lateinit var recognitionManager: VoiceRecognitionManager
     private lateinit var offlineAudioEngine: OfflineAudioEngine
     private lateinit var offlineMatcher: OfflineCommandMatcher
+    private lateinit var voskManager: VoskManager
     private lateinit var synthesisManager: VoiceSynthesisManager
     private lateinit var automationDispatcher: AutomationDispatcher
     private lateinit var db: AppDatabase
@@ -77,10 +79,40 @@ class VoiceCaptureService : Service(), AudioManager.OnAudioFocusChangeListener {
         automationDispatcher = AutomationDispatcher(this)
         offlineMatcher = OfflineCommandMatcher()
 
+        voskManager = VoskManager(
+            context = this,
+            onTextRecognized = { text ->
+                lastAudioFrameTime = System.currentTimeMillis()
+                handleRecognizedSpeech(text)
+            },
+            onPartialTranscript = { partial ->
+                lastAudioFrameTime = System.currentTimeMillis()
+                _serviceState.update { it.copy(partialTranscript = partial) }
+            },
+            onStatusChanged = { status ->
+                val state = when (status) {
+                    "LISTENING" -> ListeningStatus.LISTENING
+                    "SPEECH_DETECTED" -> ListeningStatus.SPEECH_DETECTED
+                    "STOPPED" -> ListeningStatus.STOPPED
+                    else -> ListeningStatus.LISTENING
+                }
+                _serviceState.update { it.copy(status = state) }
+                updateNotification()
+            },
+            onErrorOccurred = { error ->
+                Log.w(TAG, "Vosk error: $error")
+                _serviceState.update { it.copy(errorMessage = error) }
+                updateNotification()
+            }
+        )
+        activeVoskManager = voskManager
+
         synthesisManager = VoiceSynthesisManager(this) { isSpeaking ->
             if (isSpeaking) {
+                voskManager.pause(true)
                 _serviceState.update { it.copy(status = ListeningStatus.SPEAKING) }
             } else {
+                voskManager.pause(false)
                 if (isUsingDirectAudioEngine) {
                     _serviceState.update { it.copy(status = ListeningStatus.LISTENING) }
                 } else {
@@ -124,9 +156,9 @@ class VoiceCaptureService : Service(), AudioManager.OnAudioFocusChangeListener {
                 updateNotification()
             },
             onFatalOfflineError = {
-                // If in hybrid mode and Google STT fails with network error, auto-fallback to standalone audio engine!
-                if (currentSettings.engineMode == OfflineEngineMode.HYBRID_AUTO && !isUsingDirectAudioEngine) {
-                    Log.w(TAG, "Google STT offline error detected, switching to Direct Offline Audio Engine")
+                // If in hybrid mode and Google STT fails, auto-fallback to standalone audio engine or Vosk!
+                if (!isUsingDirectAudioEngine) {
+                    Log.w(TAG, "Speech recognition fatal error detected, switching to Direct Offline Audio Engine")
                     serviceScope.launch {
                         switchToDirectAudioEngine()
                     }
@@ -212,11 +244,6 @@ class VoiceCaptureService : Service(), AudioManager.OnAudioFocusChangeListener {
         return START_STICKY
     }
 
-    /**
-     * Android 11 Task Removal Handler:
-     * When the user clears the app from Recents, schedule an immediate restart so
-     * the microphone listening service stays alive.
-     */
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
         if (_serviceState.value.isRunning) {
@@ -246,10 +273,13 @@ class VoiceCaptureService : Service(), AudioManager.OnAudioFocusChangeListener {
                 delay(12000L) // Check every 12 seconds
                 if (_serviceState.value.isRunning) {
                     val silenceDuration = System.currentTimeMillis() - lastAudioFrameTime
-                    // If audio has been completely silent or frozen for > 25 seconds while supposed to be listening
-                    if (silenceDuration > 25000L && _serviceState.value.status != ListeningStatus.SPEAKING) {
+                    if (silenceDuration > 30000L && _serviceState.value.status != ListeningStatus.SPEAKING) {
                         Log.d(TAG, "Watchdog: Refreshing audio session to ensure microphone stays alive")
-                        if (isUsingDirectAudioEngine) {
+                        if (currentSettings.engineMode == OfflineEngineMode.VOSK_OFFLINE && voskManager.isModelReady()) {
+                            voskManager.stopListening()
+                            delay(200)
+                            voskManager.startListening()
+                        } else if (isUsingDirectAudioEngine) {
                             offlineAudioEngine.stop()
                             delay(200)
                             offlineAudioEngine.start(currentSettings)
@@ -284,8 +314,38 @@ class VoiceCaptureService : Service(), AudioManager.OnAudioFocusChangeListener {
         lastAudioFrameTime = System.currentTimeMillis()
 
         when (currentSettings.engineMode) {
+            OfflineEngineMode.VOSK_OFFLINE -> {
+                isUsingDirectAudioEngine = false
+                recognitionManager.stopListening()
+                offlineAudioEngine.stop()
+
+                if (voskManager.isModelReady()) {
+                    voskManager.startListening()
+                    _serviceState.update {
+                        it.copy(
+                            isRunning = true,
+                            status = ListeningStatus.LISTENING,
+                            activeEngine = "Vosk Offline STT (Kaldi Engine)",
+                            errorMessage = null
+                        )
+                    }
+                } else {
+                    Log.i(TAG, "Vosk model not downloaded yet. Starting Direct Audio Engine fallback.")
+                    isUsingDirectAudioEngine = true
+                    offlineAudioEngine.start(currentSettings)
+                    _serviceState.update {
+                        it.copy(
+                            isRunning = true,
+                            status = ListeningStatus.LISTENING,
+                            activeEngine = "Direct Audio Engine (Download Vosk in Settings)",
+                            errorMessage = "Vosk model not installed. Running Direct Audio Engine fallback."
+                        )
+                    }
+                }
+            }
             OfflineEngineMode.STANDALONE_AUDIO -> {
                 isUsingDirectAudioEngine = true
+                voskManager.stopListening()
                 recognitionManager.stopListening()
                 offlineAudioEngine.start(currentSettings)
                 _serviceState.update {
@@ -297,8 +357,50 @@ class VoiceCaptureService : Service(), AudioManager.OnAudioFocusChangeListener {
                     )
                 }
             }
+            OfflineEngineMode.HYBRID_AUTO -> {
+                if (voskManager.isModelReady()) {
+                    isUsingDirectAudioEngine = false
+                    offlineAudioEngine.stop()
+                    recognitionManager.stopListening()
+                    voskManager.startListening()
+                    _serviceState.update {
+                        it.copy(
+                            isRunning = true,
+                            status = ListeningStatus.LISTENING,
+                            activeEngine = "Vosk Offline STT (Kaldi Engine)",
+                            errorMessage = null
+                        )
+                    }
+                } else {
+                    val hasRecognitionService = try {
+                        SpeechRecognizer.isRecognitionAvailable(this) &&
+                        packageManager.queryIntentServices(Intent("android.speech.RecognitionService"), 0).isNotEmpty()
+                    } catch (e: Exception) {
+                        false
+                    }
+
+                    if (!hasRecognitionService) {
+                        Log.i(TAG, "No system SpeechRecognizer found on device, starting Direct Audio Engine directly.")
+                        switchToDirectAudioEngine()
+                    } else {
+                        isUsingDirectAudioEngine = false
+                        voskManager.stopListening()
+                        offlineAudioEngine.stop()
+                        recognitionManager.startListening(currentSettings)
+                        _serviceState.update {
+                            it.copy(
+                               isRunning = true,
+                               status = ListeningStatus.LISTENING,
+                               activeEngine = "Google Offline STT",
+                               errorMessage = null
+                            )
+                        }
+                    }
+                }
+            }
             OfflineEngineMode.GOOGLE_STT -> {
                 isUsingDirectAudioEngine = false
+                voskManager.stopListening()
                 offlineAudioEngine.stop()
                 recognitionManager.startListening(currentSettings)
                 _serviceState.update {
@@ -310,31 +412,6 @@ class VoiceCaptureService : Service(), AudioManager.OnAudioFocusChangeListener {
                     )
                 }
             }
-            OfflineEngineMode.HYBRID_AUTO -> {
-                val hasRecognitionService = try {
-                    SpeechRecognizer.isRecognitionAvailable(this) &&
-                    packageManager.queryIntentServices(Intent("android.speech.RecognitionService"), 0).isNotEmpty()
-                } catch (e: Exception) {
-                    false
-                }
-
-                if (!hasRecognitionService) {
-                    Log.i(TAG, "No system SpeechRecognizer found on device, starting Direct Audio Engine directly.")
-                    switchToDirectAudioEngine()
-                } else {
-                    isUsingDirectAudioEngine = false
-                    offlineAudioEngine.stop()
-                    recognitionManager.startListening(currentSettings)
-                    _serviceState.update {
-                        it.copy(
-                            isRunning = true,
-                            status = ListeningStatus.LISTENING,
-                            activeEngine = "Hybrid Auto (Google + Direct Fallback)",
-                            errorMessage = null
-                        )
-                    }
-                }
-            }
         }
 
         updateNotification()
@@ -342,6 +419,7 @@ class VoiceCaptureService : Service(), AudioManager.OnAudioFocusChangeListener {
 
     private fun switchToDirectAudioEngine() {
         isUsingDirectAudioEngine = true
+        voskManager.stopListening()
         recognitionManager.stopListening()
         offlineAudioEngine.stop()
         offlineAudioEngine.start(currentSettings)
@@ -357,6 +435,7 @@ class VoiceCaptureService : Service(), AudioManager.OnAudioFocusChangeListener {
     }
 
     private fun stopListeningSession() {
+        voskManager.stopListening()
         recognitionManager.stopListening()
         offlineAudioEngine.stop()
         synthesisManager.stop()
@@ -511,7 +590,11 @@ class VoiceCaptureService : Service(), AudioManager.OnAudioFocusChangeListener {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val engineLabel = if (isUsingDirectAudioEngine) "Dicio-style Audio Engine" else "Offline Google Engine"
+        val engineLabel = when (currentSettings.engineMode) {
+            OfflineEngineMode.VOSK_OFFLINE -> "Vosk Offline STT"
+            OfflineEngineMode.STANDALONE_AUDIO -> "Dicio-style Audio Engine"
+            else -> "Voice Service"
+        }
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("VoiceBridge • $engineLabel")
@@ -546,6 +629,7 @@ class VoiceCaptureService : Service(), AudioManager.OnAudioFocusChangeListener {
         super.onDestroy()
         Log.d(TAG, "VoiceCaptureService onDestroy")
         stopListeningSession()
+        voskManager.destroy()
         recognitionManager.destroy()
         offlineAudioEngine.stop()
         synthesisManager.shutdown()
@@ -572,6 +656,10 @@ class VoiceCaptureService : Service(), AudioManager.OnAudioFocusChangeListener {
         const val ACTION_STOP = "com.example.action.STOP_VOICE_SERVICE"
         const val ACTION_SIMULATE_COMMAND = "com.example.action.SIMULATE_COMMAND"
         const val EXTRA_SIMULATED_TEXT = "extra_simulated_text"
+
+        private var activeVoskManager: VoskManager? = null
+        val voskManagerInstance: VoskManager?
+            get() = activeVoskManager
 
         private val _serviceState = MutableStateFlow(ServiceState())
         val serviceState: StateFlow<ServiceState> = _serviceState.asStateFlow()

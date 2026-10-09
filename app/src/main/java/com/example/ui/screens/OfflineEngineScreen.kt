@@ -20,7 +20,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Hearing
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Launch
@@ -30,6 +33,7 @@ import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenuItem
@@ -38,6 +42,7 @@ import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
@@ -53,17 +58,21 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.data.model.AppSettings
 import com.example.data.model.OfflineEngineMode
+import com.example.voice.VoskManager
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun OfflineEngineScreen(
     settings: AppSettings,
+    voskState: VoskManager.ModelState,
+    onDownloadVoskModel: () -> Unit,
     onUpdateSettings: (AppSettings) -> Unit,
     onTestTts: (String) -> Unit,
     modifier: Modifier = Modifier
@@ -115,11 +124,116 @@ fun OfflineEngineScreen(
         contentPadding = PaddingValues(vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Offline Engine Mode Selection
+        // VOSK Offline STT Model Card
         item {
             Card(
                 colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.surfaceVariant
+                ),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Hearing,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = "Vosk Offline STT Engine",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = when (voskState) {
+                                is VoskManager.ModelState.Ready -> Color(0xFF00E676).copy(alpha = 0.2f)
+                                is VoskManager.ModelState.Downloading -> MaterialTheme.colorScheme.primaryContainer
+                                else -> MaterialTheme.colorScheme.errorContainer
+                            }
+                        ) {
+                            Text(
+                                text = when (voskState) {
+                                    is VoskManager.ModelState.Ready -> "MODEL INSTALLED"
+                                    is VoskManager.ModelState.Downloading -> "DOWNLOADING ${voskState.progressPercent}%"
+                                    is VoskManager.ModelState.Error -> "DOWNLOAD FAILED"
+                                    else -> "NOT INSTALLED"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = when (voskState) {
+                                    is VoskManager.ModelState.Ready -> Color(0xFF00E676)
+                                    is VoskManager.ModelState.Downloading -> MaterialTheme.colorScheme.onPrimaryContainer
+                                    else -> MaterialTheme.colorScheme.onErrorContainer
+                                },
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+
+                    Text(
+                        text = "Vosk provides Kaldi neural acoustic speech-to-text directly inside this app. Words spoken are converted to text 100% offline and forwarded to Tasker/MacroDroid in real time.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    when (voskState) {
+                        is VoskManager.ModelState.Ready -> {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF00E676), modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    text = "Vosk Small English Model is active and ready for offline speech-to-text.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color(0xFF00E676)
+                                )
+                            }
+                        }
+                        is VoskManager.ModelState.Downloading -> {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(
+                                    text = "Downloading offline model (${voskState.progressPercent}%)...",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                LinearProgressIndicator(
+                                    progress = { voskState.progressPercent / 100f },
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                        }
+                        else -> {
+                            Button(
+                                onClick = onDownloadVoskModel,
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                modifier = Modifier.fillMaxWidth().testTag("download_vosk_model_button")
+                            ) {
+                                Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text("Download Offline Vosk English Model (~40MB)")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Offline Engine Mode Selection
+        item {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface
                 ),
                 shape = RoundedCornerShape(16.dp),
                 modifier = Modifier.fillMaxWidth()
@@ -136,14 +250,14 @@ fun OfflineEngineScreen(
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            text = "Offline Voice Engine Architecture",
+                            text = "Offline Recognition Architecture",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
                     }
 
                     Text(
-                        text = "Choose how audio and speech commands are captured on your device without internet access:",
+                        text = "Choose the engine used to capture voice and send text to automation apps:",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -156,7 +270,7 @@ fun OfflineEngineScreen(
                                     if (settings.engineMode == mode)
                                         MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
                                     else
-                                        MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
+                                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
                                     RoundedCornerShape(8.dp)
                                 )
                                 .selectable(
@@ -189,7 +303,7 @@ fun OfflineEngineScreen(
             }
         }
 
-        // Direct Audio Engine (Dicio-style) Configuration
+        // Direct Audio Engine & VAD Tuning
         item {
             Card(
                 colors = CardDefaults.cardColors(
@@ -210,17 +324,11 @@ fun OfflineEngineScreen(
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            text = "Direct Audio Engine & VAD Tuning",
+                            text = "Acoustic VAD Tuning",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
                     }
-
-                    Text(
-                        text = "Fine-tune Voice Activity Detection (VAD) for your room/office ambient noise level:",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
 
                     // VAD Sensitivity Slider
                     Column {
@@ -254,134 +362,6 @@ fun OfflineEngineScreen(
                             steps = 15
                         )
                     }
-                }
-            }
-        }
-
-        // Google Offline Language Model Settings
-        item {
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                ),
-                shape = RoundedCornerShape(16.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.Mic,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                text = "Google Speech Recognition",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-
-                        Switch(
-                            checked = settings.preferOffline,
-                            onCheckedChange = { onUpdateSettings(settings.copy(preferOffline = it)) },
-                            modifier = Modifier.testTag("offline_speech_switch")
-                        )
-                    }
-
-                    ExposedDropdownMenuBox(
-                        expanded = languageExpanded,
-                        onExpandedChange = { languageExpanded = !languageExpanded }
-                    ) {
-                        val currentLangLabel = languages.firstOrNull { it.first == settings.speechLanguage }?.second
-                            ?: settings.speechLanguage
-
-                        OutlinedTextField(
-                            value = currentLangLabel,
-                            onValueChange = {},
-                            readOnly = true,
-                            label = { Text("Speech Language") },
-                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = languageExpanded) },
-                            modifier = Modifier.fillMaxWidth().menuAnchor()
-                        )
-                        ExposedDropdownMenu(
-                            expanded = languageExpanded,
-                            onDismissRequest = { languageExpanded = false }
-                        ) {
-                            languages.forEach { (code, label) ->
-                                DropdownMenuItem(
-                                    text = { Text(label) },
-                                    onClick = {
-                                        languageExpanded = false
-                                        onUpdateSettings(settings.copy(speechLanguage = code))
-                                    }
-                                )
-                            }
-                        }
-                    }
-
-                    FilledTonalButton(
-                        onClick = { openVoiceSettings() },
-                        modifier = Modifier.fillMaxWidth().testTag("open_voice_settings_button")
-                    ) {
-                        Icon(Icons.Default.Launch, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text("Manage Google Offline Languages")
-                    }
-                }
-            }
-        }
-
-        // Offline Guide Step-by-Step Card
-        item {
-            OutlinedCard(
-                colors = CardDefaults.outlinedCardColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                ),
-                shape = RoundedCornerShape(16.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.Info,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.tertiary
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            text = "How Offline Recognition Works (Like Dicio)",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-
-                    Text(
-                        text = "1. Direct Audio Engine: Uses raw AudioRecord with zero external dependencies. Voice is captured, analyzed for VAD peaks, and dispatched locally.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        text = "2. Google Offline STT: If Google language files are downloaded (~50MB), Android transcribes continuous words with full dictionary support.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        text = "3. Hybrid Mode: Gives you the best of both worlds — attempts Google offline STT, and automatically switches to the direct audio engine if Google STT fails.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
                 }
             }
         }
@@ -423,12 +403,6 @@ fun OfflineEngineScreen(
                             onCheckedChange = { onUpdateSettings(settings.copy(ttsFeedbackEnabled = it)) }
                         )
                     }
-
-                    Text(
-                        text = "Speaks spoken audio confirmations when commands are captured, automatically pausing the microphone during playback.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
 
                     if (settings.ttsFeedbackEnabled) {
                         Column {

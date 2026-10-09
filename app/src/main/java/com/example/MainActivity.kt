@@ -89,6 +89,7 @@ fun VoiceBridgeApp(viewModel: MainViewModel = viewModel()) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val rules by viewModel.rules.collectAsStateWithLifecycle()
     val logs by viewModel.logs.collectAsStateWithLifecycle()
+    val voskState by viewModel.voskModelState.collectAsStateWithLifecycle()
 
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
 
@@ -279,6 +280,8 @@ fun VoiceBridgeApp(viewModel: MainViewModel = viewModel()) {
             )
             2 -> OfflineEngineScreen(
                 settings = settings,
+                voskState = voskState,
+                onDownloadVoskModel = { viewModel.downloadVoskModel() },
                 onUpdateSettings = { viewModel.updateSettings(it) },
                 onTestTts = { viewModel.testTts(it) },
                 modifier = Modifier.padding(innerPadding)

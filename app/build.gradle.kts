@@ -118,7 +118,7 @@ dependencies {
   implementation(libs.okhttp)
   // implementation(libs.play.services.location)
   implementation(libs.retrofit)
-  implementation(files("libs/sherpa-onnx.aar"))
+  implementation("com.k2fsa.sherpa.onnx:sherpa-onnx:1.10.30")
   implementation("org.apache.commons:commons-compress:1.26.0")
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)

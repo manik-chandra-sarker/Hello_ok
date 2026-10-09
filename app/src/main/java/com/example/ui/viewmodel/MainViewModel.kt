@@ -11,8 +11,8 @@ import com.example.data.db.VoiceRuleEntity
 import com.example.data.model.AppSettings
 import com.example.data.model.ServiceState
 import com.example.service.VoiceCaptureService
+import com.example.voice.SherpaOnnxManager
 import com.example.voice.VoiceSynthesisManager
-import com.example.voice.VoskManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -27,11 +27,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val prefs = SettingsPreferences.getInstance(application)
     private val ttsTester = VoiceSynthesisManager(application)
 
-    private val _fallbackVoskState = MutableStateFlow<VoskManager.ModelState>(
-        if (File(application.filesDir, "vosk-model-small-en-us").exists())
-            VoskManager.ModelState.Ready
+    private val _fallbackSherpaState = MutableStateFlow<SherpaOnnxManager.ModelState>(
+        if (File(application.filesDir, "sherpa-onnx-model").exists())
+            SherpaOnnxManager.ModelState.Ready
         else
-            VoskManager.ModelState.NotInstalled
+            SherpaOnnxManager.ModelState.NotInstalled
     )
 
     val serviceState: StateFlow<ServiceState> = VoiceCaptureService.serviceState
@@ -46,28 +46,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         .getAllLogs()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    val voskModelState: StateFlow<VoskManager.ModelState>
-        get() = VoiceCaptureService.voskManagerInstance?.modelState ?: _fallbackVoskState.asStateFlow()
+    val sherpaOnnxModelState: StateFlow<SherpaOnnxManager.ModelState>
+        get() = VoiceCaptureService.sherpaOnnxManagerInstance?.modelState ?: _fallbackSherpaState.asStateFlow()
 
-    fun downloadVoskModel() {
-        val manager = VoiceCaptureService.voskManagerInstance
+    fun downloadSherpaOnnxModel() {
+        val manager = VoiceCaptureService.sherpaOnnxManagerInstance
         if (manager != null) {
             manager.downloadOfflineModel(viewModelScope)
         } else {
-            val standalone = VoskManager(
+            val standalone = SherpaOnnxManager(
                 context = getApplication(),
                 onTextRecognized = {},
                 onPartialTranscript = {},
                 onStatusChanged = {},
+                onRmsChanged = {},
                 onErrorOccurred = {}
             )
             standalone.downloadOfflineModel(viewModelScope)
             viewModelScope.launch {
                 standalone.modelState.collect { state ->
-                    _fallbackVoskState.value = state
+                    _fallbackSherpaState.value = state
                 }
             }
         }
+    }
+
+    fun updateCommandEndDelay(delayMs: Long) {
+        val current = settings.value
+        val updated = current.copy(commandEndDelayMs = delayMs)
+        prefs.updateSettings(updated)
+        VoiceCaptureService.sherpaOnnxManagerInstance?.updateCommandDelay(delayMs)
     }
 
     fun toggleService() {
@@ -88,6 +96,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun updateSettings(newSettings: AppSettings) {
         prefs.updateSettings(newSettings)
+        if (newSettings.commandEndDelayMs != settings.value.commandEndDelayMs) {
+            VoiceCaptureService.sherpaOnnxManagerInstance?.updateCommandDelay(newSettings.commandEndDelayMs)
+        }
     }
 
     fun saveRule(rule: VoiceRuleEntity) {

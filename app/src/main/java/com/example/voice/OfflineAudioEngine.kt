@@ -105,17 +105,39 @@ class OfflineAudioEngine(
         val silenceTimeout = currentSettings?.silenceTimeoutMs ?: 800L
         val sensitivity = currentSettings?.vadSensitivity ?: 0.5f
 
+        var consecutiveErrors = 0
         while (isRecording.get()) {
             val record = audioRecord ?: break
             val readCount = record.read(audioBuffer, 0, audioBuffer.size)
 
             if (readCount <= 0) {
+                consecutiveErrors++
                 if (readCount == AudioRecord.ERROR_INVALID_OPERATION || readCount == AudioRecord.ERROR_BAD_VALUE) {
                     onErrorOccurred("Audio read error code $readCount")
-                    break
+                    try {
+                        Thread.sleep(200L)
+                    } catch (e: InterruptedException) {
+                        break
+                    }
+                } else {
+                    try {
+                        Thread.sleep(30L)
+                    } catch (e: InterruptedException) {
+                        break
+                    }
+                }
+                if (consecutiveErrors >= 10) {
+                    Log.w(TAG, "Consecutive audio read failures in OfflineAudioEngine, pausing")
+                    try {
+                        Thread.sleep(300L)
+                    } catch (e: InterruptedException) {
+                        break
+                    }
+                    consecutiveErrors = 0
                 }
                 continue
             }
+            consecutiveErrors = 0
 
             // Calculate RMS energy of current audio frame
             var sumSquare = 0.0

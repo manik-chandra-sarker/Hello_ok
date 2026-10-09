@@ -89,7 +89,7 @@ fun VoiceBridgeApp(viewModel: MainViewModel = viewModel()) {
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val rules by viewModel.rules.collectAsStateWithLifecycle()
     val logs by viewModel.logs.collectAsStateWithLifecycle()
-    val voskState by viewModel.voskModelState.collectAsStateWithLifecycle()
+    val sherpaState by viewModel.sherpaOnnxModelState.collectAsStateWithLifecycle()
 
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
 
@@ -116,6 +116,9 @@ fun VoiceBridgeApp(viewModel: MainViewModel = viewModel()) {
         hasMicPermission = results[Manifest.permission.RECORD_AUDIO] ?: hasMicPermission
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             hasNotificationPermission = results[Manifest.permission.POST_NOTIFICATIONS] ?: hasNotificationPermission
+        }
+        if (hasMicPermission && serviceState.isRunning) {
+            viewModel.startService()
         }
     }
 
@@ -267,6 +270,7 @@ fun VoiceBridgeApp(viewModel: MainViewModel = viewModel()) {
                 },
                 onSimulateCommand = { viewModel.simulateVoiceCommand(it) },
                 onTestTts = { viewModel.testTts(it) },
+                onUpdateCommandDelay = { viewModel.updateCommandEndDelay(it) },
                 modifier = Modifier.padding(innerPadding)
             )
             1 -> RulesScreen(
@@ -280,8 +284,8 @@ fun VoiceBridgeApp(viewModel: MainViewModel = viewModel()) {
             )
             2 -> OfflineEngineScreen(
                 settings = settings,
-                voskState = voskState,
-                onDownloadVoskModel = { viewModel.downloadVoskModel() },
+                sherpaState = sherpaState,
+                onDownloadSherpaModel = { viewModel.downloadSherpaOnnxModel() },
                 onUpdateSettings = { viewModel.updateSettings(it) },
                 onTestTts = { viewModel.testTts(it) },
                 modifier = Modifier.padding(innerPadding)

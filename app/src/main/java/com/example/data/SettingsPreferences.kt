@@ -24,18 +24,19 @@ class SettingsPreferences(context: Context) {
             TargetApp.TASKER
         }
 
-        val engineModeName = prefs.getString(KEY_ENGINE_MODE, OfflineEngineMode.VOSK_OFFLINE.name) ?: OfflineEngineMode.VOSK_OFFLINE.name
+        val engineModeName = prefs.getString(KEY_ENGINE_MODE, OfflineEngineMode.SHERPA_ONNX.name) ?: OfflineEngineMode.SHERPA_ONNX.name
         val engineMode = try {
             OfflineEngineMode.valueOf(engineModeName)
         } catch (e: Exception) {
-            OfflineEngineMode.VOSK_OFFLINE
+            OfflineEngineMode.SHERPA_ONNX
         }
 
         return AppSettings(
             preferOffline = prefs.getBoolean(KEY_PREFER_OFFLINE, true),
             engineMode = engineMode,
             vadSensitivity = prefs.getFloat(KEY_VAD_SENSITIVITY, 0.5f),
-            silenceTimeoutMs = prefs.getLong(KEY_SILENCE_TIMEOUT_MS, 800L),
+            silenceTimeoutMs = prefs.getLong(KEY_SILENCE_TIMEOUT_MS, 1200L),
+            commandEndDelayMs = prefs.getLong(KEY_COMMAND_END_DELAY_MS, 2000L),
             speechLanguage = prefs.getString(KEY_SPEECH_LANGUAGE, "en-US") ?: "en-US",
             wakeWordEnabled = prefs.getBoolean(KEY_WAKE_WORD_ENABLED, false),
             wakeWord = prefs.getString(KEY_WAKE_WORD, "computer") ?: "computer",
@@ -57,6 +58,7 @@ class SettingsPreferences(context: Context) {
             putString(KEY_ENGINE_MODE, newSettings.engineMode.name)
             putFloat(KEY_VAD_SENSITIVITY, newSettings.vadSensitivity)
             putLong(KEY_SILENCE_TIMEOUT_MS, newSettings.silenceTimeoutMs)
+            putLong(KEY_COMMAND_END_DELAY_MS, newSettings.commandEndDelayMs)
             putString(KEY_SPEECH_LANGUAGE, newSettings.speechLanguage)
             putBoolean(KEY_WAKE_WORD_ENABLED, newSettings.wakeWordEnabled)
             putString(KEY_WAKE_WORD, newSettings.wakeWord)
@@ -81,6 +83,7 @@ class SettingsPreferences(context: Context) {
         private const val KEY_ENGINE_MODE = "engine_mode"
         private const val KEY_VAD_SENSITIVITY = "vad_sensitivity"
         private const val KEY_SILENCE_TIMEOUT_MS = "silence_timeout_ms"
+        private const val KEY_COMMAND_END_DELAY_MS = "command_end_delay_ms"
         private const val KEY_SPEECH_LANGUAGE = "speech_language"
         private const val KEY_WAKE_WORD_ENABLED = "wake_word_enabled"
         private const val KEY_WAKE_WORD = "wake_word"

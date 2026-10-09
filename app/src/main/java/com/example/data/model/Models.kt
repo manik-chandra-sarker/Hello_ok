@@ -26,17 +26,17 @@ enum class TargetApp(val displayName: String, val defaultAction: String, val def
 }
 
 enum class OfflineEngineMode(val title: String, val subtitle: String) {
-    VOSK_OFFLINE(
-        title = "Vosk Offline STT (True Speech-to-Text)",
-        subtitle = "Transforms spoken words into text 100% offline using embedded Vosk engine"
+    SHERPA_ONNX(
+        title = "Sherpa-ONNX (Next-Gen Neural STT)",
+        subtitle = "Transforms spoken voice to text offline with Sherpa-ONNX Zipformer neural network"
     ),
     STANDALONE_AUDIO(
         title = "Direct Acoustic VAD Engine (Dicio-style)",
         subtitle = "100% on-device AudioRecord VAD & acoustic phrase matcher"
     ),
     HYBRID_AUTO(
-        title = "Hybrid Auto (Vosk + Fallbacks)",
-        subtitle = "Uses Vosk offline STT, automatically falls back to Direct Audio Engine if needed"
+        title = "Hybrid Auto (Sherpa-ONNX + Fallbacks)",
+        subtitle = "Uses Sherpa-ONNX, automatically falling back to Direct Audio Engine if needed"
     ),
     GOOGLE_STT(
         title = "Google SpeechRecognizer (Offline Mode)",
@@ -46,9 +46,10 @@ enum class OfflineEngineMode(val title: String, val subtitle: String) {
 
 data class AppSettings(
     val preferOffline: Boolean = true,
-    val engineMode: OfflineEngineMode = OfflineEngineMode.VOSK_OFFLINE,
+    val engineMode: OfflineEngineMode = OfflineEngineMode.SHERPA_ONNX,
     val vadSensitivity: Float = 0.5f,
-    val silenceTimeoutMs: Long = 800L,
+    val silenceTimeoutMs: Long = 1200L,
+    val commandEndDelayMs: Long = 2000L, // Time delay (in ms) after speech pauses before finalizing & sending command
     val speechLanguage: String = "en-US",
     val wakeWordEnabled: Boolean = false,
     val wakeWord: String = "computer",
@@ -77,7 +78,7 @@ enum class ListeningStatus(val label: String) {
 data class ServiceState(
     val isRunning: Boolean = false,
     val status: ListeningStatus = ListeningStatus.STOPPED,
-    val activeEngine: String = "Offline Audio",
+    val activeEngine: String = "Sherpa-ONNX",
     val rmsDb: Float = 0f,
     val partialTranscript: String = "",
     val lastRecognizedText: String = "",

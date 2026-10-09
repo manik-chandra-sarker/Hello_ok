@@ -30,9 +30,9 @@ import com.example.data.model.ServiceState
 import com.example.voice.AutomationDispatcher
 import com.example.voice.OfflineAudioEngine
 import com.example.voice.OfflineCommandMatcher
+import com.example.voice.SherpaOnnxManager
 import com.example.voice.VoiceRecognitionManager
 import com.example.voice.VoiceSynthesisManager
-import com.example.voice.VoskManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -55,7 +55,7 @@ class VoiceCaptureService : Service(), AudioManager.OnAudioFocusChangeListener {
     private lateinit var recognitionManager: VoiceRecognitionManager
     private lateinit var offlineAudioEngine: OfflineAudioEngine
     private lateinit var offlineMatcher: OfflineCommandMatcher
-    private lateinit var voskManager: VoskManager
+    private lateinit var sherpaOnnxManager: SherpaOnnxManager
     private lateinit var synthesisManager: VoiceSynthesisManager
     private lateinit var automationDispatcher: AutomationDispatcher
     private lateinit var db: AppDatabase
@@ -79,7 +79,7 @@ class VoiceCaptureService : Service(), AudioManager.OnAudioFocusChangeListener {
         automationDispatcher = AutomationDispatcher(this)
         offlineMatcher = OfflineCommandMatcher()
 
-        voskManager = VoskManager(
+        sherpaOnnxManager = SherpaOnnxManager(
             context = this,
             onTextRecognized = { text ->
                 lastAudioFrameTime = System.currentTimeMillis()
@@ -99,20 +99,24 @@ class VoiceCaptureService : Service(), AudioManager.OnAudioFocusChangeListener {
                 _serviceState.update { it.copy(status = state) }
                 updateNotification()
             },
+            onRmsChanged = { rmsDb ->
+                lastAudioFrameTime = System.currentTimeMillis()
+                _serviceState.update { it.copy(rmsDb = rmsDb) }
+            },
             onErrorOccurred = { error ->
-                Log.w(TAG, "Vosk error: $error")
+                Log.w(TAG, "Sherpa-ONNX error: $error")
                 _serviceState.update { it.copy(errorMessage = error) }
                 updateNotification()
             }
         )
-        activeVoskManager = voskManager
+        activeSherpaOnnxManager = sherpaOnnxManager
 
         synthesisManager = VoiceSynthesisManager(this) { isSpeaking ->
             if (isSpeaking) {
-                voskManager.pause(true)
+                sherpaOnnxManager.pause(true)
                 _serviceState.update { it.copy(status = ListeningStatus.SPEAKING) }
             } else {
-                voskManager.pause(false)
+                sherpaOnnxManager.pause(false)
                 if (isUsingDirectAudioEngine) {
                     _serviceState.update { it.copy(status = ListeningStatus.LISTENING) }
                 } else {
@@ -156,7 +160,6 @@ class VoiceCaptureService : Service(), AudioManager.OnAudioFocusChangeListener {
                 updateNotification()
             },
             onFatalOfflineError = {
-                // If in hybrid mode and Google STT fails, auto-fallback to standalone audio engine or Vosk!
                 if (!isUsingDirectAudioEngine) {
                     Log.w(TAG, "Speech recognition fatal error detected, switching to Direct Offline Audio Engine")
                     serviceScope.launch {
@@ -208,6 +211,9 @@ class VoiceCaptureService : Service(), AudioManager.OnAudioFocusChangeListener {
             settingsPreferences.settingsFlow.collect { newSettings ->
                 val prev = currentSettings
                 currentSettings = newSettings
+                if (prev.commandEndDelayMs != newSettings.commandEndDelayMs) {
+                    sherpaOnnxManager.updateCommandDelay(newSettings.commandEndDelayMs)
+                }
                 if (_serviceState.value.isRunning &&
                     (prev.engineMode != newSettings.engineMode || prev.speechLanguage != newSettings.speechLanguage)
                 ) {
@@ -225,20 +231,26 @@ class VoiceCaptureService : Service(), AudioManager.OnAudioFocusChangeListener {
         val action = intent?.action ?: ACTION_START
         Log.d(TAG, "onStartCommand action: $action")
 
-        when (action) {
-            ACTION_START -> {
-                startForegroundServiceInternal()
-                startListeningSession()
+        try {
+            when (action) {
+                ACTION_START -> {
+                    startForegroundServiceInternal()
+                    startListeningSession()
+                }
+                ACTION_STOP -> {
+                    stopListeningSession()
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
+                ACTION_SIMULATE_COMMAND -> {
+                    val simulatedText = intent?.getStringExtra(EXTRA_SIMULATED_TEXT) ?: "test command"
+                    handleRecognizedSpeech(simulatedText)
+                }
             }
-            ACTION_STOP -> {
-                stopListeningSession()
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
-            }
-            ACTION_SIMULATE_COMMAND -> {
-                val simulatedText = intent?.getStringExtra(EXTRA_SIMULATED_TEXT) ?: "test command"
-                handleRecognizedSpeech(simulatedText)
-            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Exception in onStartCommand", e)
+            return START_NOT_STICKY
         }
 
         return START_STICKY
@@ -246,46 +258,33 @@ class VoiceCaptureService : Service(), AudioManager.OnAudioFocusChangeListener {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
-        if (_serviceState.value.isRunning) {
-            Log.d(TAG, "onTaskRemoved: Scheduling service revival via AlarmManager")
-            val restartIntent = Intent(applicationContext, VoiceCaptureService::class.java).apply {
-                action = ACTION_START
-                setPackage(packageName)
-            }
-            val restartPendingIntent = PendingIntent.getService(
-                applicationContext,
-                101,
-                restartIntent,
-                PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
-            )
-            val alarmManager = getSystemService(Context.ALARM_SERVICE) as? AlarmManager
-            alarmManager?.set(
-                AlarmManager.ELAPSED_REALTIME_WAKEUP,
-                SystemClock.elapsedRealtime() + 1000L,
-                restartPendingIntent
-            )
-        }
+        Log.d(TAG, "onTaskRemoved: Application closed, service keeping foreground notification")
     }
 
     private fun startKeepAliveWatchdog() {
         serviceScope.launch {
             while (isActive) {
-                delay(12000L) // Check every 12 seconds
-                if (_serviceState.value.isRunning) {
+                delay(20000L) // Check every 20 seconds
+                if (_serviceState.value.isRunning &&
+                    androidx.core.content.ContextCompat.checkSelfPermission(
+                        this@VoiceCaptureService,
+                        android.Manifest.permission.RECORD_AUDIO
+                    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                ) {
                     val silenceDuration = System.currentTimeMillis() - lastAudioFrameTime
-                    if (silenceDuration > 30000L && _serviceState.value.status != ListeningStatus.SPEAKING) {
+                    if (silenceDuration > 45000L && _serviceState.value.status != ListeningStatus.SPEAKING) {
                         Log.d(TAG, "Watchdog: Refreshing audio session to ensure microphone stays alive")
-                        if (currentSettings.engineMode == OfflineEngineMode.VOSK_OFFLINE && voskManager.isModelReady()) {
-                            voskManager.stopListening()
-                            delay(200)
-                            voskManager.startListening()
+                        if (currentSettings.engineMode == OfflineEngineMode.SHERPA_ONNX && sherpaOnnxManager.isModelReady()) {
+                            sherpaOnnxManager.stopListening()
+                            delay(500)
+                            sherpaOnnxManager.startListening(currentSettings)
                         } else if (isUsingDirectAudioEngine) {
                             offlineAudioEngine.stop()
-                            delay(200)
+                            delay(500)
                             offlineAudioEngine.start(currentSettings)
                         } else {
                             recognitionManager.stopListening()
-                            delay(200)
+                            delay(500)
                             recognitionManager.startListening(currentSettings)
                         }
                         lastAudioFrameTime = System.currentTimeMillis()
@@ -297,55 +296,82 @@ class VoiceCaptureService : Service(), AudioManager.OnAudioFocusChangeListener {
 
     private fun startForegroundServiceInternal() {
         val notification = buildNotification("Microphone active - Listening for offline voice commands")
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val hasMic = androidx.core.content.ContextCompat.checkSelfPermission(
+                    this,
+                    android.Manifest.permission.RECORD_AUDIO
+                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+                val fgsType = if (hasMic) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                } else {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                }
+                startForeground(NOTIFICATION_ID, notification, fgsType)
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+            _serviceState.update { it.copy(isRunning = true, status = ListeningStatus.INITIALIZING) }
+        } catch (e: Exception) {
+            Log.e(TAG, "startForeground error", e)
         }
-        _serviceState.update { it.copy(isRunning = true, status = ListeningStatus.INITIALIZING) }
     }
 
     private fun startListeningSession() {
+        if (androidx.core.content.ContextCompat.checkSelfPermission(
+                this,
+                android.Manifest.permission.RECORD_AUDIO
+            ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.w(TAG, "Cannot start listening session: RECORD_AUDIO permission missing")
+            _serviceState.update {
+                it.copy(
+                    isRunning = false,
+                    status = ListeningStatus.ERROR,
+                    errorMessage = "Microphone permission required"
+                )
+            }
+            updateNotification("Microphone permission required")
+            return
+        }
+
         currentSettings = settingsPreferences.getSettings()
         lastAudioFrameTime = System.currentTimeMillis()
 
         when (currentSettings.engineMode) {
-            OfflineEngineMode.VOSK_OFFLINE -> {
+            OfflineEngineMode.SHERPA_ONNX -> {
                 isUsingDirectAudioEngine = false
                 recognitionManager.stopListening()
                 offlineAudioEngine.stop()
 
-                if (voskManager.isModelReady()) {
-                    voskManager.startListening()
+                if (sherpaOnnxManager.isModelReady()) {
+                    sherpaOnnxManager.startListening(currentSettings)
                     _serviceState.update {
                         it.copy(
                             isRunning = true,
                             status = ListeningStatus.LISTENING,
-                            activeEngine = "Vosk Offline STT (Kaldi Engine)",
+                            activeEngine = "Sherpa-ONNX Neural STT",
                             errorMessage = null
                         )
                     }
                 } else {
-                    Log.i(TAG, "Vosk model not downloaded yet. Starting Direct Audio Engine fallback.")
+                    Log.i(TAG, "Sherpa-ONNX model not downloaded yet. Starting Direct Audio Engine fallback.")
                     isUsingDirectAudioEngine = true
                     offlineAudioEngine.start(currentSettings)
                     _serviceState.update {
                         it.copy(
                             isRunning = true,
                             status = ListeningStatus.LISTENING,
-                            activeEngine = "Direct Audio Engine (Download Vosk in Settings)",
-                            errorMessage = "Vosk model not installed. Running Direct Audio Engine fallback."
+                            activeEngine = "Direct Audio Engine (Download Sherpa-ONNX in Offline tab)",
+                            errorMessage = "Sherpa-ONNX model not installed. Running Direct Audio Engine fallback."
                         )
                     }
                 }
             }
             OfflineEngineMode.STANDALONE_AUDIO -> {
                 isUsingDirectAudioEngine = true
-                voskManager.stopListening()
+                sherpaOnnxManager.stopListening()
                 recognitionManager.stopListening()
                 offlineAudioEngine.start(currentSettings)
                 _serviceState.update {
@@ -358,16 +384,16 @@ class VoiceCaptureService : Service(), AudioManager.OnAudioFocusChangeListener {
                 }
             }
             OfflineEngineMode.HYBRID_AUTO -> {
-                if (voskManager.isModelReady()) {
+                if (sherpaOnnxManager.isModelReady()) {
                     isUsingDirectAudioEngine = false
                     offlineAudioEngine.stop()
                     recognitionManager.stopListening()
-                    voskManager.startListening()
+                    sherpaOnnxManager.startListening(currentSettings)
                     _serviceState.update {
                         it.copy(
                             isRunning = true,
                             status = ListeningStatus.LISTENING,
-                            activeEngine = "Vosk Offline STT (Kaldi Engine)",
+                            activeEngine = "Sherpa-ONNX Neural STT",
                             errorMessage = null
                         )
                     }
@@ -384,7 +410,7 @@ class VoiceCaptureService : Service(), AudioManager.OnAudioFocusChangeListener {
                         switchToDirectAudioEngine()
                     } else {
                         isUsingDirectAudioEngine = false
-                        voskManager.stopListening()
+                        sherpaOnnxManager.stopListening()
                         offlineAudioEngine.stop()
                         recognitionManager.startListening(currentSettings)
                         _serviceState.update {
@@ -400,7 +426,7 @@ class VoiceCaptureService : Service(), AudioManager.OnAudioFocusChangeListener {
             }
             OfflineEngineMode.GOOGLE_STT -> {
                 isUsingDirectAudioEngine = false
-                voskManager.stopListening()
+                sherpaOnnxManager.stopListening()
                 offlineAudioEngine.stop()
                 recognitionManager.startListening(currentSettings)
                 _serviceState.update {
@@ -419,7 +445,7 @@ class VoiceCaptureService : Service(), AudioManager.OnAudioFocusChangeListener {
 
     private fun switchToDirectAudioEngine() {
         isUsingDirectAudioEngine = true
-        voskManager.stopListening()
+        sherpaOnnxManager.stopListening()
         recognitionManager.stopListening()
         offlineAudioEngine.stop()
         offlineAudioEngine.start(currentSettings)
@@ -435,7 +461,7 @@ class VoiceCaptureService : Service(), AudioManager.OnAudioFocusChangeListener {
     }
 
     private fun stopListeningSession() {
-        voskManager.stopListening()
+        sherpaOnnxManager.stopListening()
         recognitionManager.stopListening()
         offlineAudioEngine.stop()
         synthesisManager.stop()
@@ -591,7 +617,7 @@ class VoiceCaptureService : Service(), AudioManager.OnAudioFocusChangeListener {
         )
 
         val engineLabel = when (currentSettings.engineMode) {
-            OfflineEngineMode.VOSK_OFFLINE -> "Vosk Offline STT"
+            OfflineEngineMode.SHERPA_ONNX -> "Sherpa-ONNX Neural STT"
             OfflineEngineMode.STANDALONE_AUDIO -> "Dicio-style Audio Engine"
             else -> "Voice Service"
         }
@@ -629,7 +655,7 @@ class VoiceCaptureService : Service(), AudioManager.OnAudioFocusChangeListener {
         super.onDestroy()
         Log.d(TAG, "VoiceCaptureService onDestroy")
         stopListeningSession()
-        voskManager.destroy()
+        sherpaOnnxManager.destroy()
         recognitionManager.destroy()
         offlineAudioEngine.stop()
         synthesisManager.shutdown()
@@ -657,9 +683,9 @@ class VoiceCaptureService : Service(), AudioManager.OnAudioFocusChangeListener {
         const val ACTION_SIMULATE_COMMAND = "com.example.action.SIMULATE_COMMAND"
         const val EXTRA_SIMULATED_TEXT = "extra_simulated_text"
 
-        private var activeVoskManager: VoskManager? = null
-        val voskManagerInstance: VoskManager?
-            get() = activeVoskManager
+        private var activeSherpaOnnxManager: SherpaOnnxManager? = null
+        val sherpaOnnxManagerInstance: SherpaOnnxManager?
+            get() = activeSherpaOnnxManager
 
         private val _serviceState = MutableStateFlow(ServiceState())
         val serviceState: StateFlow<ServiceState> = _serviceState.asStateFlow()
@@ -668,10 +694,14 @@ class VoiceCaptureService : Service(), AudioManager.OnAudioFocusChangeListener {
             val intent = Intent(context, VoiceCaptureService::class.java).apply {
                 action = ACTION_START
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start VoiceCaptureService: ${e.message}", e)
             }
         }
 

@@ -16,6 +16,11 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Download Sherpa ONNX AAR
+        run: |
+          mkdir -p app/libs
+          curl -L -o app/libs/sherpa-onnx.aar https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.10.30/sherpa-onnx-1.10.30.aar
+
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
